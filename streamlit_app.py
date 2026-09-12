@@ -6,6 +6,15 @@ import pandas as pd
 import streamlit as st
 from streamlit.typing import UploadedFile
 
+from branding import (
+    APP_VERSION,
+    COMPANY_NAME,
+    LOGO_PATH,
+    PREMIUM_BADGE,
+    PRODUCT_NAME,
+    VALUE_PROPOSITION,
+    liquid_glass_css,
+)
 from report_engine import (
     ReportInputError,
     ReportValidationError,
@@ -18,54 +27,84 @@ from report_engine import (
 
 
 st.set_page_config(
-    page_title="Order planning report",
-    page_icon=":material/table_view:",
+    page_title=f"{PRODUCT_NAME} | {COMPANY_NAME}",
+    page_icon=str(LOGO_PATH),
     layout="wide",
 )
+
+st.html(liquid_glass_css())
 
 st.session_state.setdefault("generated_report", None)
 st.session_state.setdefault("uploaded_fingerprint", None)
 
-st.title("Order planning report", icon=":material/table_view:")
-st.caption(
-    "Generate the first 36 eligible-order planning workbook locally. "
-    "The uploaded ERP file is processed in memory and is not modified."
-)
+with st.container(key="brand_nav"):
+    with st.container(
+        horizontal=True,
+        vertical_alignment="center",
+        wrap=False,
+        key="brand_nav_inner",
+    ):
+        st.image(LOGO_PATH, width=54)
+        st.markdown(f"**{COMPANY_NAME}** Order intelligence")
+        st.space("stretch")
+        st.badge(f"Version {APP_VERSION}", color="yellow")
 
-with st.container(border=True):
-    st.subheader("1. Upload the daily report", icon=":material/upload_file:")
-    uploaded_file: UploadedFile | None = st.file_uploader(
-        "Order Status workbook",
-        type="xlsx",
-        key="order_status_file",
-        help="The workbook must contain the sheet 'Order Status-By shipment Date'.",
-        max_upload_size=200,
-    )
+with st.container(key="hero"):
+    hero_logo, hero_copy = st.columns([1.25, 4], gap="large", vertical_alignment="center")
+    with hero_logo:
+        st.image(LOGO_PATH, width=230)
+    with hero_copy:
+        st.badge(PREMIUM_BADGE, color="yellow", icon=":material/verified:")
+        st.title(PRODUCT_NAME)
+        st.markdown(VALUE_PROPOSITION)
+        st.caption(
+            ":material/lock: Your ERP workbook is processed locally in memory and is never modified."
+        )
 
-with st.container(border=True):
-    st.subheader("2. Choose the output", icon=":material/tune:")
-    mode_labels = {
-        "Complete workbook": "all",
-        "Highlighted report": "highlighted",
-        "Red only": "red",
-        "Black only": "black",
-        "Yellow only": "yellow",
-        "Green only": "green",
-    }
-    selected_label = st.segmented_control(
-        "Report type",
-        options=list(mode_labels),
-        default="Complete workbook",
-        required=True,
-        key="report_type",
-        wrap=True,
-        width="stretch",
-    )
-    mode = mode_labels[selected_label]
-    st.caption(
-        "Complete workbook includes the highlighted report, four condition tabs, "
-        "STD exclusion log, and run summary."
-    )
+with st.container(key="workflow_intro"):
+    st.subheader("Create your planning report", icon=":material/auto_awesome:")
+    st.caption("Upload the daily workbook, choose the view, and generate a validated Excel file.")
+
+upload_column, output_column = st.columns(2, gap="large")
+with upload_column:
+    with st.container(border=True, key="upload_panel"):
+        st.subheader("1. Upload the daily report", icon=":material/upload_file:")
+        st.caption("Select the original ERP Order Status workbook in XLSX format.")
+        uploaded_file: UploadedFile | None = st.file_uploader(
+            "Order Status workbook",
+            type="xlsx",
+            key="order_status_file",
+            help="The workbook must contain the sheet 'Order Status-By shipment Date'.",
+            max_upload_size=200,
+        )
+        st.caption(":material/database: Source values stay unchanged throughout processing.")
+
+with output_column:
+    with st.container(border=True, key="output_panel"):
+        st.subheader("2. Choose the output", icon=":material/tune:")
+        st.caption("Create the full workbook or focus on one planning condition.")
+        mode_labels = {
+            "Complete workbook": "all",
+            "Highlighted report": "highlighted",
+            "Red only": "red",
+            "Black only": "black",
+            "Yellow only": "yellow",
+            "Green only": "green",
+        }
+        selected_label = st.segmented_control(
+            "Report type",
+            options=list(mode_labels),
+            default="Complete workbook",
+            required=True,
+            key="report_type",
+            wrap=True,
+            width="stretch",
+        )
+        mode = mode_labels[selected_label]
+        st.caption(
+            "Complete workbook includes the highlighted report, four condition tabs, "
+            "STD exclusion log, and run summary."
+        )
 
 if uploaded_file is not None:
     uploaded_bytes = uploaded_file.getvalue()
@@ -82,13 +121,23 @@ current_result = st.session_state.generated_report
 if current_result is not None and current_result["mode"] != mode:
     st.session_state.generated_report = None
 
-generate_clicked = st.button(
-    "Generate report",
-    type="primary",
-    icon=":material/play_arrow:",
-    disabled=uploaded_bytes is None,
-    width="content",
-)
+with st.container(key="action_bar"):
+    action_copy, action_button = st.columns([3.8, 1.25], vertical_alignment="center")
+    with action_copy:
+        if uploaded_bytes is None:
+            st.markdown("**Ready when you are**")
+            st.caption("Upload a valid workbook to unlock report generation.")
+        else:
+            st.markdown(f"**{uploaded_file.name}**")
+            st.caption("Workbook loaded securely. Generate whenever you’re ready.")
+    with action_button:
+        generate_clicked = st.button(
+            "Generate report",
+            type="primary",
+            icon=":material/auto_awesome:",
+            disabled=uploaded_bytes is None,
+            width="stretch",
+        )
 
 if generate_clicked and uploaded_bytes is not None:
     try:
@@ -123,78 +172,80 @@ if generate_clicked and uploaded_bytes is not None:
 result = st.session_state.generated_report
 if result is not None:
     prepared = result["prepared"]
-    st.subheader("Validation summary", icon=":material/fact_check:")
-    metrics = st.container(horizontal=True)
-    metrics.metric("Eligible orders", prepared["order_count"], border=True)
-    metrics.metric("Non-STD FG lines", len(prepared["rows"]), border=True)
-    metrics.metric("Excluded STD lines", len(prepared["excluded_std"]), border=True)
-    metrics.metric("All-STD orders removed", len(prepared["all_std_order_ids"]), border=True)
+    with st.container(key="result_shell"):
+        st.badge("Validated output", color="green", icon=":material/verified:")
+        st.subheader("Validation summary", icon=":material/fact_check:")
+        metrics = st.container(horizontal=True, horizontal_alignment="distribute")
+        metrics.metric("Eligible orders", prepared["order_count"], border=True)
+        metrics.metric("Non-STD FG lines", len(prepared["rows"]), border=True)
+        metrics.metric("Excluded STD lines", len(prepared["excluded_std"]), border=True)
+        metrics.metric("All-STD orders removed", len(prepared["all_std_order_ids"]), border=True)
 
-    condition_data = pd.DataFrame(
-        [
-            {"Condition": label, "FG lines": prepared["condition_counts"][label]}
-            for label in ("Red", "Black", "Yellow", "Green", "No Fill")
-        ]
-    )
-    preview_data = pd.DataFrame(preview_rows(prepared))
-    summary_tab, preview_tab, exclusions_tab = st.tabs(
-        [
-            ":material/palette: Condition totals",
-            ":material/preview: FG preview",
-            ":material/block: STD exclusions",
-        ]
-    )
-    with summary_tab:
-        st.dataframe(
-            condition_data,
-            hide_index=True,
-            width="content",
-            column_config={
-                "FG lines": st.column_config.NumberColumn(format="%d"),
-            },
+        condition_data = pd.DataFrame(
+            [
+                {"Condition": label, "FG lines": prepared["condition_counts"][label]}
+                for label in ("Red", "Black", "Yellow", "Green", "No Fill")
+            ]
         )
-        st.caption("No Fill lines remain uncoloured in the Excel report.")
-    with preview_tab:
-        st.dataframe(
-            preview_data,
-            hide_index=True,
-            height=430,
-            key="fg_preview",
-            column_config={
-                "Buyer Requested Shipment Date": st.column_config.DateColumn(format="DD-MMM-YYYY"),
-                "Pending Prod": st.column_config.NumberColumn(format="localized"),
-                "Planned Qty Total": st.column_config.NumberColumn(format="localized"),
-                "Un Planned": st.column_config.NumberColumn(format="localized"),
-            },
+        preview_data = pd.DataFrame(preview_rows(prepared))
+        summary_tab, preview_tab, exclusions_tab = st.tabs(
+            [
+                ":material/palette: Condition totals",
+                ":material/preview: FG preview",
+                ":material/block: STD exclusions",
+            ]
         )
-    with exclusions_tab:
-        exclusions = pd.DataFrame(prepared["excluded_std"])
-        if exclusions.empty:
-            st.caption("No STD FG lines were found in the selected scope.")
-        else:
-            exclusions = exclusions.rename(
-                columns={
-                    "output_order_seq": "Output Order Seq",
-                    "source_order_seq": "Source Order Seq",
-                    "order_id": "Order ID",
-                    "source_row": "Source Row",
-                    "fg_id": "FG Item ID",
-                    "fg_name": "Prod Name",
-                    "exclusion_type": "Exclusion Type",
-                }
+        with summary_tab:
+            st.dataframe(
+                condition_data,
+                hide_index=True,
+                width="content",
+                column_config={
+                    "FG lines": st.column_config.NumberColumn(format="%d"),
+                },
             )
-            st.dataframe(exclusions, hide_index=True, height=360, key="std_exclusions")
+            st.caption("No Fill lines remain uncoloured in the Excel report.")
+        with preview_tab:
+            st.dataframe(
+                preview_data,
+                hide_index=True,
+                height=430,
+                key="fg_preview",
+                column_config={
+                    "Buyer Requested Shipment Date": st.column_config.DateColumn(format="DD-MMM-YYYY"),
+                    "Pending Prod": st.column_config.NumberColumn(format="localized"),
+                    "Planned Qty Total": st.column_config.NumberColumn(format="localized"),
+                    "Un Planned": st.column_config.NumberColumn(format="localized"),
+                },
+            )
+        with exclusions_tab:
+            exclusions = pd.DataFrame(prepared["excluded_std"])
+            if exclusions.empty:
+                st.caption("No STD FG lines were found in the selected scope.")
+            else:
+                exclusions = exclusions.rename(
+                    columns={
+                        "output_order_seq": "Output Order Seq",
+                        "source_order_seq": "Source Order Seq",
+                        "order_id": "Order ID",
+                        "source_row": "Source Row",
+                        "fg_id": "FG Item ID",
+                        "fg_name": "Prod Name",
+                        "exclusion_type": "Exclusion Type",
+                    }
+                )
+                st.dataframe(exclusions, hide_index=True, height=360, key="std_exclusions")
 
-    st.download_button(
-        "Download Excel report",
-        data=result["workbook_bytes"],
-        file_name=safe_output_filename(result["source_name"], result["mode"]),
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary",
-        icon=":material/download:",
-        on_click="ignore",
-        width="content",
-    )
+        st.download_button(
+            "Download Excel report",
+            data=result["workbook_bytes"],
+            file_name=safe_output_filename(result["source_name"], result["mode"]),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            icon=":material/download:",
+            on_click="ignore",
+            width="content",
+        )
 
 with st.expander("Rules used by this app", icon=":material/rule:"):
     st.markdown(
@@ -207,3 +258,5 @@ with st.expander("Rules used by this app", icon=":material/rule:"):
 - Do not perform BOM, stock, capacity, or planner-reason analysis.
 """
     )
+
+st.caption(f"{COMPANY_NAME} • {PRODUCT_NAME} v{APP_VERSION} • Local processing")

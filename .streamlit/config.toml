@@ -1,11 +1,29 @@
 [theme]
-primaryColor = "#1F6E5C"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F4F7F6"
-textColor = "#1F2937"
-font = "Arial"
-baseRadius = "medium"
+base = "dark"
+primaryColor = "#E0A010"
+backgroundColor = "#08090B"
+secondaryBackgroundColor = "#15171B"
+textColor = "#F7F3E8"
+linkColor = "#F0D15B"
+borderColor = "#3B3933"
 showWidgetBorder = true
+showSidebarBorder = true
+baseRadius = "large"
+buttonRadius = "full"
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+headingFont = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@600;700;800&display=swap"
+baseFontSize = 16
+baseFontWeight = 400
+headingFontSizes = ["3.45rem", "2rem", "1.35rem", "1.1rem", "1rem", ".9rem"]
+headingFontWeights = [750, 700, 650, 600, 600, 600]
+linkUnderline = false
+dataframeBorderColor = "#3B3933"
+dataframeHeaderBackgroundColor = "#1D1F23"
+redColor = "#FF5C5C"
+yellowColor = "#E0A010"
+greenColor = "#35C786"
+grayColor = "#9D9A92"
+chartCategoricalColors = ["#E0A010", "#35C786", "#FF5C5C", "#F0D15B", "#8E8B84"]
 
 [server]
 maxUploadSize = 200
