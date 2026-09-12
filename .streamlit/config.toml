@@ -1,0 +1,14 @@
+[theme]
+primaryColor = "#1F6E5C"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F4F7F6"
+textColor = "#1F2937"
+font = "Arial"
+baseRadius = "medium"
+showWidgetBorder = true
+
+[server]
+maxUploadSize = 200
+
+[browser]
+gatherUsageStats = false
