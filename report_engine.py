@@ -717,7 +717,7 @@ def preview_rows(prepared: dict[str, Any], limit: int = 200) -> list[dict[str, A
 def safe_output_filename(source_name: str, mode: str) -> str:
     stem = Path(source_name).stem
     stem = re.sub(r"[^A-Za-z0-9._ -]+", "", stem).strip()[:80] or "OrderStatus"
-    suffix = {
+    prefix = {
         "all": "Complete",
         "highlighted": "Highlighted",
         "red": "Red_Only",
@@ -725,4 +725,4 @@ def safe_output_filename(source_name: str, mode: str) -> str:
         "yellow": "Yellow_Only",
         "green": "Green_Only",
     }[normalize(mode)]
-    return f"{stem}_First_36_Eligible_Orders_{suffix}.xlsx"
+    return f"{prefix}_{stem}_First_36_Eligible_Orders.xlsx"
