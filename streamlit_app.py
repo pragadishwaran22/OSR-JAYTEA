@@ -16,6 +16,7 @@ from branding import (
     liquid_glass_css,
 )
 from report_engine import (
+    EXEMPTION_WORKBOOK_PATH,
     ReportInputError,
     ReportValidationError,
     generate_workbook,
@@ -76,6 +77,9 @@ with upload_column:
             key="order_status_file",
             help="The workbook must contain the sheet 'Order Status-By shipment Date'.",
             max_upload_size=200,
+        )
+        st.caption(
+            f":material/folder: Exemptions load automatically from `{EXEMPTION_WORKBOOK_PATH.name}`."
         )
         st.caption(":material/database: Source values stay unchanged throughout processing.")
 
@@ -145,7 +149,7 @@ if generate_clicked and uploaded_bytes is not None:
             prepared = prepare_report(uploaded_bytes, uploaded_file.name)
             st.write(
                 f"Found {prepared['order_count']} eligible orders and "
-                f"{len(prepared['rows'])} non-STD FG lines."
+                f"{len(prepared['rows'])} eligible FG lines."
             )
             status.update(label="Building the Excel report", state="running")
             workbook_bytes = generate_workbook(prepared, mode)
@@ -177,9 +181,9 @@ if result is not None:
         st.subheader("Validation summary", icon=":material/fact_check:")
         metrics = st.container(horizontal=True, horizontal_alignment="distribute")
         metrics.metric("Eligible orders", prepared["order_count"], border=True)
-        metrics.metric("Non-STD FG lines", len(prepared["rows"]), border=True)
-        metrics.metric("Excluded STD lines", len(prepared["excluded_std"]), border=True)
-        metrics.metric("All-STD orders removed", len(prepared["all_std_order_ids"]), border=True)
+        metrics.metric("Eligible FG lines", len(prepared["rows"]), border=True)
+        metrics.metric("Excluded FG lines", len(prepared["excluded_fgs"]), border=True)
+        metrics.metric("All-excluded orders removed", len(prepared["all_excluded_order_ids"]), border=True)
 
         condition_data = pd.DataFrame(
             [
@@ -192,7 +196,7 @@ if result is not None:
             [
                 ":material/palette: Condition totals",
                 ":material/preview: FG preview",
-                ":material/block: STD exclusions",
+                ":material/block: FG exclusions",
             ]
         )
         with summary_tab:
@@ -219,9 +223,9 @@ if result is not None:
                 },
             )
         with exclusions_tab:
-            exclusions = pd.DataFrame(prepared["excluded_std"])
+            exclusions = pd.DataFrame(prepared["excluded_fgs"])
             if exclusions.empty:
-                st.caption("No STD FG lines were found in the selected scope.")
+                st.caption("No finished-good lines were excluded in the selected scope.")
             else:
                 exclusions = exclusions.rename(
                     columns={
@@ -234,7 +238,7 @@ if result is not None:
                         "exclusion_type": "Exclusion Type",
                     }
                 )
-                st.dataframe(exclusions, hide_index=True, height=360, key="std_exclusions")
+                st.dataframe(exclusions, hide_index=True, height=360, key="fg_exclusions")
 
         st.download_button(
             "Download Excel report",
@@ -251,8 +255,8 @@ with st.expander("Rules used by this app", icon=":material/rule:"):
     st.markdown(
         """
 - Select the first **36 eligible orders** in source order.
-- Remove FG lines whose `Prod Name` contains `STD`.
-- Remove an entire order only when all its FG lines contain `STD`; replace it with the next eligible order.
+- Remove FG lines whose `Prod Name` contains `STD`, begins with `FG`, or exactly matches an `Item_Name` in the uploaded exemption list. All checks are case-insensitive.
+- Remove an entire order only when all its FG lines are excluded; replace it with the next eligible order.
 - Treat the first two detected `Planned in <week>` columns as the acceptable planning period.
 - Highlight only the planning section through `Un Planned` using red, black, yellow, or green.
 - Do not perform BOM, stock, capacity, or planner-reason analysis.

@@ -14,6 +14,10 @@ from openpyxl.utils import get_column_letter
 
 
 SHEET_NAME = "Order Status-By shipment Date"
+EXEMPTION_ITEM_NAME_HEADER = "Item_Name"
+EXEMPTION_WORKBOOK_PATH = (
+    Path(__file__).resolve().parent / "data" / "exemptions" / "finished_good_exemptions.xlsx"
+)
 ORDER_COUNT = 36
 REQUIRED_HEADERS = (
     "Ord Id",
@@ -39,7 +43,7 @@ MODE_SHEETS = {
         "Black Only",
         "Yellow Only",
         "Green Only",
-        "Excluded STD Log",
+        "Excluded FG Log",
         "Run Summary",
     ],
     "highlighted": ["Highlighted Report"],
@@ -77,6 +81,69 @@ def identifier(value: Any) -> str:
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value or "").strip()
+
+
+def _load_exemption_names(
+    source: bytes | BinaryIO | None, source_name: str | None
+) -> set[str]:
+    """Read unique finished-good names from the exemption workbook."""
+    if source is None:
+        return set()
+    if not source_name or not source_name.lower().endswith(".xlsx"):
+        raise ReportInputError("Upload the exemption list as an Excel workbook with the .xlsx extension.")
+
+    stream = BytesIO(source) if isinstance(source, bytes) else source
+    try:
+        workbook = load_workbook(stream, data_only=True, read_only=True)
+    except Exception as exc:
+        raise ReportInputError("The exemption list could not be opened as a valid .xlsx workbook.") from exc
+
+    try:
+        for sheet in workbook.worksheets:
+            for row_number in range(1, min(sheet.max_row, 60) + 1):
+                headers = [sheet.cell(row_number, column).value for column in range(1, sheet.max_column + 1)]
+                matches = [
+                    column for column, header in enumerate(headers)
+                    if normalize(header) == normalize(EXEMPTION_ITEM_NAME_HEADER)
+                ]
+                if len(matches) > 1:
+                    raise ReportInputError("The exemption list contains duplicate 'Item_Name' columns.")
+                if not matches:
+                    continue
+                name_column = matches[0] + 1
+                names = {
+                    normalize(sheet.cell(row, name_column).value)
+                    for row in range(row_number + 1, sheet.max_row + 1)
+                    if normalize(sheet.cell(row, name_column).value)
+                }
+                if not names:
+                    raise ReportInputError("The exemption list does not contain any Item_Name values.")
+                return names
+    finally:
+        workbook.close()
+    raise ReportInputError("The exemption list must contain a column named 'Item_Name'.")
+
+
+def _default_exemption_source() -> tuple[bytes, str]:
+    if not EXEMPTION_WORKBOOK_PATH.is_file():
+        raise ReportInputError(
+            "The exemption workbook is missing. Place it at "
+            f"'{EXEMPTION_WORKBOOK_PATH}'."
+        )
+    return EXEMPTION_WORKBOOK_PATH.read_bytes(), EXEMPTION_WORKBOOK_PATH.name
+
+
+def exclusion_type(fg_name: str, exemption_names: set[str]) -> str | None:
+    """Return the first matching exclusion reason for a finished-good line."""
+    normalized_name = normalize(fg_name)
+    upper_name = fg_name.upper()
+    if "STD" in upper_name:
+        return "STD in Prod Name"
+    if upper_name.startswith("FG"):
+        return "Prod Name starts with FG"
+    if normalized_name in exemption_names:
+        return "Exemption item name"
+    return None
 
 
 def number(value: Any, *, row: int, header: str) -> float:
@@ -143,11 +210,20 @@ def _unique_header_map(headers: list[str]) -> dict[str, int]:
     return {key: indexes[0] for key, indexes in positions.items()}
 
 
-def prepare_report(source: bytes | BinaryIO, source_name: str, order_count: int = ORDER_COUNT) -> dict[str, Any]:
+def prepare_report(
+    source: bytes | BinaryIO,
+    source_name: str,
+    order_count: int = ORDER_COUNT,
+    exemption_source: bytes | BinaryIO | None = None,
+    exemption_source_name: str | None = None,
+) -> dict[str, Any]:
     if not source_name.lower().endswith(".xlsx"):
         raise ReportInputError("Upload an Excel workbook with the .xlsx extension.")
     if order_count < 1:
         raise ReportInputError("The eligible-order count must be at least 1.")
+    if exemption_source is None:
+        exemption_source, exemption_source_name = _default_exemption_source()
+    exemption_names = _load_exemption_names(exemption_source, exemption_source_name)
 
     stream = BytesIO(source) if isinstance(source, bytes) else source
     try:
@@ -262,19 +338,21 @@ def prepare_report(source: bytes | BinaryIO, source_name: str, order_count: int 
         workbook.close()
 
     rows: list[dict[str, Any]] = []
-    excluded_std: list[dict[str, Any]] = []
+    excluded_fgs: list[dict[str, Any]] = []
     eligible_order_ids: list[str] = []
     output_order_seq = 0
     last_scoped_source_row = None
 
     for group in groups:
-        std_rows = [row for row in group["product_rows"] if "STD" in row["fg_name"].upper()]
-        non_std_rows = [
-            row for row in group["product_rows"] if "STD" not in row["fg_name"].upper()
+        matched_exclusions = [
+            (row, exclusion_type(row["fg_name"], exemption_names))
+            for row in group["product_rows"]
         ]
-        if not non_std_rows:
-            for row in std_rows:
-                excluded_std.append(
+        excluded_rows = [(row, reason) for row, reason in matched_exclusions if reason]
+        eligible_rows = [row for row, reason in matched_exclusions if reason is None]
+        if not eligible_rows:
+            for row, reason in excluded_rows:
+                excluded_fgs.append(
                     {
                         "output_order_seq": None,
                         "source_order_seq": group["source_order_seq"],
@@ -282,20 +360,20 @@ def prepare_report(source: bytes | BinaryIO, source_name: str, order_count: int 
                         "source_row": row["source_row"],
                         "fg_id": row["fg_id"],
                         "fg_name": row["fg_name"],
-                        "exclusion_type": "All-STD order removed",
+                        "exclusion_type": f"All-excluded order removed: {reason}",
                     }
                 )
             continue
 
         output_order_seq += 1
         eligible_order_ids.append(group["order_id"])
-        for row in non_std_rows:
+        for row in eligible_rows:
             row = dict(row)
             row["order_seq"] = output_order_seq
             row["source_order_seq"] = group["source_order_seq"]
             rows.append(row)
-        for row in std_rows:
-            excluded_std.append(
+        for row, reason in excluded_rows:
+            excluded_fgs.append(
                 {
                     "output_order_seq": output_order_seq,
                     "source_order_seq": group["source_order_seq"],
@@ -303,7 +381,7 @@ def prepare_report(source: bytes | BinaryIO, source_name: str, order_count: int 
                     "source_row": row["source_row"],
                     "fg_id": row["fg_id"],
                     "fg_name": row["fg_name"],
-                    "exclusion_type": "STD FG removed from mixed order",
+                    "exclusion_type": f"FG removed from mixed order: {reason}",
                 }
             )
         last_scoped_source_row = group["last_source_row"]
@@ -341,10 +419,10 @@ def prepare_report(source: bytes | BinaryIO, source_name: str, order_count: int 
     counts = Counter(row["condition"] for row in rows)
     for condition in CONDITIONS:
         counts.setdefault(condition, 0)
-    all_std_order_ids = sorted(
+    all_excluded_order_ids = sorted(
         {
             item["order_id"]
-            for item in excluded_std
+            for item in excluded_fgs
             if item["output_order_seq"] is None
         }
     )
@@ -362,10 +440,11 @@ def prepare_report(source: bytes | BinaryIO, source_name: str, order_count: int 
         "unplanned_output_index": output_header_map[normalize("Un Planned")],
         "prod_name_output_index": output_header_map[normalize("Prod Name")],
         "rows": rows,
-        "excluded_std": excluded_std,
+        "excluded_fgs": excluded_fgs,
+        "exemption_names": sorted(exemption_names),
         "condition_counts": dict(counts),
         "eligible_order_ids": eligible_order_ids,
-        "all_std_order_ids": all_std_order_ids,
+        "all_excluded_order_ids": all_excluded_order_ids,
         "last_scoped_source_row": last_scoped_source_row,
     }
 
@@ -414,7 +493,7 @@ def _write_data_sheet(workbook: Workbook, prepared: dict[str, Any], name: str, c
     sheet["A1"] = "First 36 eligible orders" if condition is None else f"{condition} planning lines"
     sheet["A1"].font = Font(name="Arial", size=16, bold=True, color=BODY_TEXT)
     scope = (
-        f"{prepared['order_count']} eligible orders; STD FG lines excluded."
+        f"{prepared['order_count']} eligible orders; excluded FG lines removed."
         if condition is None
         else f"{len(items)} FG {'line' if len(items) == 1 else 'lines'} classified as {condition}."
     )
@@ -503,8 +582,8 @@ def _write_data_sheet(workbook: Workbook, prepared: dict[str, Any], name: str, c
         sheet["A6"].font = Font(name="Arial", size=10, italic=True, color=MUTED_TEXT)
 
 
-def _write_std_log(workbook: Workbook, prepared: dict[str, Any]) -> None:
-    sheet = workbook.create_sheet("Excluded STD Log")
+def _write_exclusion_log(workbook: Workbook, prepared: dict[str, Any]) -> None:
+    sheet = workbook.create_sheet("Excluded FG Log")
     headers = [
         "Output Order Seq", "Source Order Seq", "Order ID", "Source Row",
         "FG Item ID", "Prod Name", "Exclusion Type",
@@ -513,9 +592,9 @@ def _write_std_log(workbook: Workbook, prepared: dict[str, Any]) -> None:
     sheet.freeze_panes = "A5"
     sheet.merge_cells("A1:G1")
     sheet.merge_cells("A2:G2")
-    sheet["A1"] = "Excluded STD finished goods"
+    sheet["A1"] = "Excluded finished goods"
     sheet["A1"].font = Font(name="Arial", size=16, bold=True, color=BODY_TEXT)
-    sheet["A2"] = f"Source: {prepared['source_file']} | Audit trail for every excluded STD FG line."
+    sheet["A2"] = f"Source: {prepared['source_file']} | Audit trail for every excluded FG line."
     sheet["A2"].font = Font(name="Arial", size=10, italic=True, color=MUTED_TEXT)
     for column, header in enumerate(headers, start=1):
         cell = sheet.cell(4, column, header)
@@ -524,7 +603,7 @@ def _write_std_log(workbook: Workbook, prepared: dict[str, Any]) -> None:
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     sheet.row_dimensions[4].height = 36
     light_side = Side(style="thin", color=LIGHT_LINE)
-    for row_number, item in enumerate(prepared["excluded_std"], start=5):
+    for row_number, item in enumerate(prepared["excluded_fgs"], start=5):
         values = [
             item["output_order_seq"], item["source_order_seq"], item["order_id"],
             item["source_row"], item["fg_id"], item["fg_name"], item["exclusion_type"],
@@ -539,7 +618,7 @@ def _write_std_log(workbook: Workbook, prepared: dict[str, Any]) -> None:
     widths = [18, 18, 16, 13, 16, 45, 34]
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[get_column_letter(index)].width = width
-    end_row = max(5, 4 + len(prepared["excluded_std"]))
+    end_row = max(5, 4 + len(prepared["excluded_fgs"]))
     sheet.auto_filter.ref = f"A4:G{end_row}"
     sheet.print_title_rows = "4:4"
     sheet.print_area = f"A1:G{end_row}"
@@ -556,9 +635,9 @@ def _write_summary(workbook: Workbook, prepared: dict[str, Any]) -> None:
     sheet["A2"].font = Font(name="Arial", size=10, italic=True, color=MUTED_TEXT)
     summary = [
         ("Eligible orders", prepared["order_count"]),
-        ("Non-STD FG lines", len(prepared["rows"])),
-        ("Excluded STD FG lines", len(prepared["excluded_std"])),
-        ("All-STD orders removed", len(prepared["all_std_order_ids"])),
+        ("Eligible FG lines", len(prepared["rows"])),
+        ("Excluded FG lines", len(prepared["excluded_fgs"])),
+        ("All-excluded orders removed", len(prepared["all_excluded_order_ids"])),
         ("Planning columns", ", ".join(prepared["plan_headers"])),
         ("Last scoped source row", prepared["last_scoped_source_row"]),
     ]
@@ -614,7 +693,7 @@ def generate_workbook(prepared: dict[str, Any], mode: str = "all") -> bytes:
         if mode in {"all", condition.lower()}:
             _write_data_sheet(workbook, prepared, f"{condition} Only", condition)
     if mode == "all":
-        _write_std_log(workbook, prepared)
+        _write_exclusion_log(workbook, prepared)
         _write_summary(workbook, prepared)
 
     buffer = BytesIO()
@@ -659,10 +738,13 @@ def validate_generated_workbook(workbook_bytes: bytes, prepared: dict[str, Any],
             if expected_rows:
                 prod_column = header_map[normalize("Prod Name")]
                 if any(
-                    "STD" in str(sheet.cell(row, prod_column).value or "").upper()
+                    exclusion_type(
+                        str(sheet.cell(row, prod_column).value or ""),
+                        set(prepared["exemption_names"]),
+                    )
                     for row in range(6, sheet.max_row + 1)
                 ):
-                    raise ReportValidationError(f"STD FG line found in '{sheet_name}'.")
+                    raise ReportValidationError(f"Excluded FG line found in '{sheet_name}'.")
 
         if "Highlighted Report" in workbook.sheetnames:
             sheet = workbook["Highlighted Report"]
@@ -684,11 +766,11 @@ def validate_generated_workbook(workbook_bytes: bytes, prepared: dict[str, Any],
                     f"=MAX({pending}{row}-{total}{row},0)"
                 ):
                     raise ReportValidationError("Un Planned formula validation failed.")
-        if "Excluded STD Log" in workbook.sheetnames:
-            sheet = workbook["Excluded STD Log"]
+        if "Excluded FG Log" in workbook.sheetnames:
+            sheet = workbook["Excluded FG Log"]
             actual = max(sheet.max_row - 4, 0)
-            if actual != len(prepared["excluded_std"]):
-                raise ReportValidationError("Excluded STD Log does not reconcile to the source selection.")
+            if actual != len(prepared["excluded_fgs"]):
+                raise ReportValidationError("Excluded FG Log does not reconcile to the source selection.")
     finally:
         workbook.close()
 

@@ -27,22 +27,26 @@ def sample_source() -> bytes:
         sheet.cell(6, column, header)
 
     source_row = 9
-    for order_number in range(1, 38):
+    for order_number in range(1, 41):
         if order_number == 2:
             product_names = ["TEST PRODUCT STD"]
         elif order_number == 1:
             product_names = ["TEST PRODUCT 1", "TEST PRODUCT STD MIXED"]
+        elif order_number == 3:
+            product_names = ["fg sample product"]
+        elif order_number == 4:
+            product_names = ["Exempt Product"]
         else:
             product_names = [f"TEST PRODUCT {order_number}"]
         for item_number, product_name in enumerate(product_names):
             pending = 100
             if order_number == 1:
                 planned = [0, 0, 0]
-            elif order_number == 3:
-                planned = [10, 0, 20]
-            elif order_number == 4:
-                planned = [10, 0, 90]
             elif order_number == 5:
+                planned = [10, 0, 20]
+            elif order_number == 6:
+                planned = [10, 0, 90]
+            elif order_number == 7:
                 planned = [30, 0, 0]
             else:
                 planned = [100, 0, 0]
@@ -68,13 +72,29 @@ def sample_source() -> bytes:
     return buffer.getvalue()
 
 
+def sample_exemptions() -> bytes:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet["A1"] = "Item_Name"
+    sheet["A2"] = "EXEMPT PRODUCT"
+    buffer = BytesIO()
+    workbook.save(buffer)
+    workbook.close()
+    return buffer.getvalue()
+
+
 class ReportEngineTests(unittest.TestCase):
     def test_complete_workbook_reconciles(self):
-        prepared = prepare_report(sample_source(), "daily.xlsx")
+        prepared = prepare_report(
+            sample_source(), "daily.xlsx", exemption_source=sample_exemptions(),
+            exemption_source_name="exemptions.xlsx",
+        )
         self.assertEqual(36, len(prepared["eligible_order_ids"]))
         self.assertEqual(36, len(prepared["rows"]))
-        self.assertEqual(2, len(prepared["excluded_std"]))
-        self.assertEqual(["ORD-2"], prepared["all_std_order_ids"])
+        self.assertEqual(4, len(prepared["excluded_fgs"]))
+        self.assertEqual(["ORD-2", "ORD-3", "ORD-4"], prepared["all_excluded_order_ids"])
+        self.assertTrue(any("starts with FG" in row["exclusion_type"] for row in prepared["excluded_fgs"]))
+        self.assertTrue(any("Exemption item name" in row["exclusion_type"] for row in prepared["excluded_fgs"]))
         self.assertEqual(1, prepared["condition_counts"]["Red"])
         self.assertEqual(1, prepared["condition_counts"]["Black"])
         self.assertEqual(1, prepared["condition_counts"]["Yellow"])
@@ -86,7 +106,7 @@ class ReportEngineTests(unittest.TestCase):
         self.assertEqual(
             [
                 "Highlighted Report", "Red Only", "Black Only", "Yellow Only",
-                "Green Only", "Excluded STD Log", "Run Summary",
+                "Green Only", "Excluded FG Log", "Run Summary",
             ],
             workbook.sheetnames,
         )
@@ -98,13 +118,23 @@ class ReportEngineTests(unittest.TestCase):
         workbook.close()
 
     def test_condition_only_workbook(self):
-        prepared = prepare_report(sample_source(), "daily.xlsx")
+        prepared = prepare_report(
+            sample_source(), "daily.xlsx", exemption_source=sample_exemptions(),
+            exemption_source_name="exemptions.xlsx",
+        )
         output = generate_workbook(prepared, "red")
         validate_generated_workbook(output, prepared, "red")
         workbook = load_workbook(BytesIO(output), data_only=False)
         self.assertEqual(["Red Only"], workbook.sheetnames)
         self.assertEqual(6, workbook["Red Only"].max_row)
         workbook.close()
+
+    def test_default_exemption_workbook_is_used_without_upload(self):
+        prepared = prepare_report(sample_source(), "daily.xlsx")
+        self.assertIn(
+            "akouna cappuccino 3 in 1 (25gms) 12 strips x 10 sachets with hanger",
+            prepared["exemption_names"],
+        )
 
     def test_missing_required_sheet_stops(self):
         workbook = Workbook()
@@ -113,6 +143,18 @@ class ReportEngineTests(unittest.TestCase):
         workbook.close()
         with self.assertRaisesRegex(ReportInputError, "Required sheet not found"):
             prepare_report(buffer.getvalue(), "daily.xlsx")
+
+    def test_exemption_list_requires_item_name_header(self):
+        workbook = Workbook()
+        workbook.active["A1"] = "Product"
+        buffer = BytesIO()
+        workbook.save(buffer)
+        workbook.close()
+        with self.assertRaisesRegex(ReportInputError, "Item_Name"):
+            prepare_report(
+                sample_source(), "daily.xlsx", exemption_source=buffer.getvalue(),
+                exemption_source_name="exemptions.xlsx",
+            )
 
 
 if __name__ == "__main__":

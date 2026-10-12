@@ -21,3 +21,9 @@ Double-click `start_app.bat`. Streamlit opens the application in the default bro
 5. Download the generated Excel workbook.
 
 The source workbook is read in memory and is never edited.
+
+## Eligibility rules
+
+The app selects the first 36 eligible orders in source order. It excludes a finished-good line when its `Prod Name` contains `STD`, begins with `FG`, or exactly matches an `Item_Name` in `data/exemptions/finished_good_exemptions.xlsx`. All comparisons are case-insensitive. If every FG line in an order is excluded, the order is skipped and the next eligible order takes its sequence number. For a mixed order, only the excluded FG lines are removed.
+
+To update exemptions, replace `data/exemptions/finished_good_exemptions.xlsx` with the latest list. Keep an `Item_Name` column; no app upload is needed.
