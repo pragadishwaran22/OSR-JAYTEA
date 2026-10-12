@@ -84,8 +84,30 @@ with upload_column:
         st.caption(":material/database: Source values stay unchanged throughout processing.")
 
 with output_column:
+    with st.container(border=True, key="order_basis_panel"):
+        st.subheader("2. Choose the order date", icon=":material/event:")
+        st.caption("Choose how the first 36 eligible orders are selected.")
+        basis_labels = {
+            "Plan to Ship": "plan_to_ship",
+            "Buyer Requested Shipment Date": "buyer_requested",
+        }
+        selected_basis = st.segmented_control(
+            "Select orders by",
+            options=list(basis_labels),
+            default="Plan to Ship",
+            required=True,
+            key="order_basis",
+            wrap=True,
+            width="stretch",
+        )
+        order_basis = basis_labels[selected_basis]
+        st.caption(
+            "Plan to Ship follows the source sheet order. Buyer Requested Shipment "
+            "Date sorts orders from earliest to latest before applying exclusions."
+        )
+
     with st.container(border=True, key="output_panel"):
-        st.subheader("2. Choose the output", icon=":material/tune:")
+        st.subheader("3. Choose the output", icon=":material/tune:")
         st.caption("Create the full workbook or focus on one planning condition.")
         mode_labels = {
             "Complete workbook": "all",
@@ -122,7 +144,10 @@ else:
     st.session_state.generated_report = None
 
 current_result = st.session_state.generated_report
-if current_result is not None and current_result["mode"] != mode:
+if current_result is not None and (
+    current_result["mode"] != mode
+    or current_result.get("order_basis", "plan_to_ship") != order_basis
+):
     st.session_state.generated_report = None
 
 with st.container(key="action_bar"):
@@ -146,7 +171,9 @@ with st.container(key="action_bar"):
 if generate_clicked and uploaded_bytes is not None:
     try:
         with st.status("Checking the workbook", expanded=True) as status:
-            prepared = prepare_report(uploaded_bytes, uploaded_file.name)
+            prepared = prepare_report(
+                uploaded_bytes, uploaded_file.name, order_basis=order_basis
+            )
             st.write(
                 f"Found {prepared['order_count']} eligible orders and "
                 f"{len(prepared['rows'])} eligible FG lines."
@@ -158,6 +185,7 @@ if generate_clicked and uploaded_bytes is not None:
             status.update(label="Report ready", state="complete", expanded=False)
         st.session_state.generated_report = {
             "mode": mode,
+            "order_basis": order_basis,
             "source_name": uploaded_file.name,
             "prepared": prepared,
             "workbook_bytes": workbook_bytes,
@@ -179,6 +207,14 @@ if result is not None:
     with st.container(key="result_shell"):
         st.badge("Validated output", color="green", icon=":material/verified:")
         st.subheader("Validation summary", icon=":material/fact_check:")
+        st.caption(
+            "Selected by: "
+            + (
+                "Plan to Ship (source order)"
+                if prepared["order_basis"] == "plan_to_ship"
+                else "Buyer Requested Shipment Date (earliest first)"
+            )
+        )
         metrics = st.container(horizontal=True, horizontal_alignment="distribute")
         metrics.metric("Eligible orders", prepared["order_count"], border=True)
         metrics.metric("Eligible FG lines", len(prepared["rows"]), border=True)
@@ -243,7 +279,9 @@ if result is not None:
         st.download_button(
             "Download Excel report",
             data=result["workbook_bytes"],
-            file_name=safe_output_filename(result["source_name"], result["mode"]),
+            file_name=safe_output_filename(
+                result["source_name"], result["mode"], result["order_basis"]
+            ),
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
             icon=":material/download:",
@@ -254,7 +292,8 @@ if result is not None:
 with st.expander("Rules used by this app", icon=":material/rule:"):
     st.markdown(
         """
-- Select the first **36 eligible orders** in source order.
+- For **Plan to Ship**, select the first **36 eligible orders** in source sheet order.
+- For **Buyer Requested Shipment Date**, sort whole orders by that date ascending, then select the first **36 eligible orders**. Orders with the same date retain their source order.
 - Remove FG lines whose `Prod Name` contains `STD`, begins with `FG`, or exactly matches an `Item_Name` in the uploaded exemption list. All checks are case-insensitive.
 - Remove an entire order only when all its FG lines are excluded; replace it with the next eligible order.
 - Treat the first two detected `Planned in <week>` columns as the acceptable planning period.

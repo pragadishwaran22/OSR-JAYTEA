@@ -9,6 +9,7 @@ from report_engine import (
     ReportInputError,
     generate_workbook,
     prepare_report,
+    safe_output_filename,
     validate_generated_workbook,
 )
 
@@ -84,6 +85,41 @@ def sample_exemptions() -> bytes:
 
 
 class ReportEngineTests(unittest.TestCase):
+    def test_buyer_date_orders_whole_orders_before_selecting_36(self):
+        workbook = load_workbook(BytesIO(sample_source()))
+        sheet = workbook.active
+        for row in sheet.iter_rows(min_row=9):
+            order_id = row[0].value
+            if order_id == "ORD-2":
+                row[3].value = "2025-01-01"  # This order is fully excluded.
+            elif order_id in {"ORD-39", "ORD-40"}:
+                row[3].value = "2026-01-01"  # Equal dates preserve source order.
+        buffer = BytesIO()
+        workbook.save(buffer)
+        workbook.close()
+
+        prepared = prepare_report(
+            buffer.getvalue(), "daily.xlsx", order_basis="buyer_requested",
+            exemption_source=sample_exemptions(),
+            exemption_source_name="exemptions.xlsx",
+        )
+        self.assertEqual(["ORD-39", "ORD-40", "ORD-1"], prepared["eligible_order_ids"][:3])
+        self.assertEqual("ORD-37", prepared["eligible_order_ids"][-1])
+        self.assertNotIn("ORD-38", prepared["eligible_order_ids"])
+        self.assertEqual("buyer_requested", prepared["order_basis"])
+        output = generate_workbook(prepared, "all")
+        validate_generated_workbook(output, prepared, "all")
+        result = load_workbook(BytesIO(output), read_only=True)
+        self.assertEqual(
+            "Buyer Requested Shipment Date (ascending)",
+            result["Run Summary"]["B5"].value,
+        )
+        result.close()
+        self.assertIn(
+            "Buyer_Requested_Date",
+            safe_output_filename("daily.xlsx", "all", "buyer_requested"),
+        )
+
     def test_complete_workbook_reconciles(self):
         prepared = prepare_report(
             sample_source(), "daily.xlsx", exemption_source=sample_exemptions(),

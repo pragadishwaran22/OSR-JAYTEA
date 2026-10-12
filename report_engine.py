@@ -19,6 +19,10 @@ EXEMPTION_WORKBOOK_PATH = (
     Path(__file__).resolve().parent / "data" / "exemptions" / "finished_good_exemptions.xlsx"
 )
 ORDER_COUNT = 36
+ORDER_BASES = {
+    "plan_to_ship": "Plan To Ship (worksheet order)",
+    "buyer_requested": "Buyer Requested Shipment Date (ascending)",
+}
 REQUIRED_HEADERS = (
     "Ord Id",
     "Buyer Requested Shipment Date",
@@ -81,6 +85,21 @@ def identifier(value: Any) -> str:
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value or "").strip()
+
+
+def _shipment_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        for date_format in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(text, date_format).date()
+            except ValueError:
+                pass
+    return None
 
 
 def _load_exemption_names(
@@ -216,11 +235,14 @@ def prepare_report(
     order_count: int = ORDER_COUNT,
     exemption_source: bytes | BinaryIO | None = None,
     exemption_source_name: str | None = None,
+    order_basis: str = "plan_to_ship",
 ) -> dict[str, Any]:
     if not source_name.lower().endswith(".xlsx"):
         raise ReportInputError("Upload an Excel workbook with the .xlsx extension.")
     if order_count < 1:
         raise ReportInputError("The eligible-order count must be at least 1.")
+    if order_basis not in ORDER_BASES:
+        raise ReportInputError(f"Unsupported order date selection: {order_basis}")
     if exemption_source is None:
         exemption_source, exemption_source_name = _default_exemption_source()
     exemption_names = _load_exemption_names(exemption_source, exemption_source_name)
@@ -258,6 +280,7 @@ def prepare_report(
             raise ReportInputError("Planning-week columns must be contiguous in the source report.")
 
         order_index = header_map[normalize("Ord Id")]
+        buyer_date_index = header_map[normalize("Buyer Requested Shipment Date")]
         prod_id_index = header_map[normalize("Prod Id")]
         prod_name_index = header_map[normalize("Prod Name")]
         pending_index = header_map[normalize("Pending Prod")]
@@ -337,6 +360,21 @@ def prepare_report(
     finally:
         workbook.close()
 
+    if order_basis == "buyer_requested":
+        for group in groups:
+            first_product = next(iter(group["product_rows"]), None)
+            group["buyer_requested_date"] = (
+                _shipment_date(first_product["values"][buyer_date_index])
+                if first_product is not None else None
+            )
+        groups.sort(
+            key=lambda group: (
+                group["buyer_requested_date"] is None,
+                group["buyer_requested_date"] or date.max,
+                group["source_order_seq"],
+            )
+        )
+
     rows: list[dict[str, Any]] = []
     excluded_fgs: list[dict[str, Any]] = []
     eligible_order_ids: list[str] = []
@@ -364,6 +402,13 @@ def prepare_report(
                     }
                 )
             continue
+
+        if order_basis == "buyer_requested" and group["buyer_requested_date"] is None:
+            raise ReportInputError(
+                "An eligible order needed for the first 36 has no valid "
+                f"Buyer Requested Shipment Date (order {group['order_id']}, "
+                f"source row {group['first_source_row']})."
+            )
 
         output_order_seq += 1
         eligible_order_ids.append(group["order_id"])
@@ -431,6 +476,7 @@ def prepare_report(
         "source_sheet": SHEET_NAME,
         "source_header_row": header_row,
         "order_count": order_count,
+        "order_basis": order_basis,
         "headers": headers,
         "output_headers": output_headers,
         "plan_headers": [headers[index] for index in plan_source_indexes],
@@ -497,7 +543,10 @@ def _write_data_sheet(workbook: Workbook, prepared: dict[str, Any], name: str, c
         if condition is None
         else f"{len(items)} FG {'line' if len(items) == 1 else 'lines'} classified as {condition}."
     )
-    sheet["A2"] = f"Source: {prepared['source_file']} | {scope}"
+    sheet["A2"] = (
+        f"Source: {prepared['source_file']} | "
+        f"Selected by: {ORDER_BASES[prepared['order_basis']]} | {scope}"
+    )
     sheet["A2"].font = Font(name="Arial", size=10, italic=True, color=MUTED_TEXT)
 
     if condition is None:
@@ -634,12 +683,13 @@ def _write_summary(workbook: Workbook, prepared: dict[str, Any]) -> None:
     sheet["A2"] = f"Source: {prepared['source_file']} | Sheet: {prepared['source_sheet']}"
     sheet["A2"].font = Font(name="Arial", size=10, italic=True, color=MUTED_TEXT)
     summary = [
+        ("Order selection", ORDER_BASES[prepared["order_basis"]]),
         ("Eligible orders", prepared["order_count"]),
         ("Eligible FG lines", len(prepared["rows"])),
         ("Excluded FG lines", len(prepared["excluded_fgs"])),
         ("All-excluded orders removed", len(prepared["all_excluded_order_ids"])),
         ("Planning columns", ", ".join(prepared["plan_headers"])),
-        ("Last scoped source row", prepared["last_scoped_source_row"]),
+        ("Final selected order source row", prepared["last_scoped_source_row"]),
     ]
     conditions = [
         ("Red", prepared["condition_counts"]["Red"], "Pending production exists and nothing is planned"),
@@ -674,7 +724,7 @@ def _write_summary(workbook: Workbook, prepared: dict[str, Any]) -> None:
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[get_column_letter(index)].width = width
     sheet.freeze_panes = "A4"
-    sheet.print_area = "A1:F10"
+    sheet.print_area = "A1:F11"
 
 
 def generate_workbook(prepared: dict[str, Any], mode: str = "all") -> bytes:
@@ -796,7 +846,9 @@ def preview_rows(prepared: dict[str, Any], limit: int = 200) -> list[dict[str, A
     return result
 
 
-def safe_output_filename(source_name: str, mode: str) -> str:
+def safe_output_filename(
+    source_name: str, mode: str, order_basis: str = "plan_to_ship"
+) -> str:
     stem = Path(source_name).stem
     stem = re.sub(r"[^A-Za-z0-9._ -]+", "", stem).strip()[:80] or "OrderStatus"
     prefix = {
@@ -807,4 +859,8 @@ def safe_output_filename(source_name: str, mode: str) -> str:
         "yellow": "Yellow_Only",
         "green": "Green_Only",
     }[normalize(mode)]
-    return f"{prefix}_{stem}_First_36_Eligible_Orders.xlsx"
+    basis = {
+        "plan_to_ship": "Plan_To_Ship",
+        "buyer_requested": "Buyer_Requested_Date",
+    }[order_basis]
+    return f"{prefix}_{basis}_{stem}_First_36_Eligible_Orders.xlsx"

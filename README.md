@@ -15,15 +15,16 @@ Double-click `start_app.bat`. Streamlit opens the application in the default bro
 ## Daily use
 
 1. Upload the daily `.xlsx` Order Status workbook.
-2. Choose the complete workbook or one condition-specific output.
-3. Select **Generate report**.
-4. Review the validation summary.
-5. Download the generated Excel workbook.
+2. Choose **Plan to Ship** (source sheet order) or **Buyer Requested Shipment Date** (earliest first).
+3. Choose the complete workbook or one condition-specific output.
+4. Select **Generate report**.
+5. Review the validation summary.
+6. Download the generated Excel workbook.
 
 The source workbook is read in memory and is never edited.
 
 ## Eligibility rules
 
-The app selects the first 36 eligible orders in source order. It excludes a finished-good line when its `Prod Name` contains `STD`, begins with `FG`, or exactly matches an `Item_Name` in `data/exemptions/finished_good_exemptions.xlsx`. All comparisons are case-insensitive. If every FG line in an order is excluded, the order is skipped and the next eligible order takes its sequence number. For a mixed order, only the excluded FG lines are removed.
+For Plan to Ship, the app selects the first 36 eligible orders in source sheet order. For Buyer Requested Shipment Date, it sorts whole orders by that date ascending (keeping source order for ties), then selects the first 36 eligible orders. It excludes a finished-good line when its `Prod Name` contains `STD`, begins with `FG`, or exactly matches an `Item_Name` in `data/exemptions/finished_good_exemptions.xlsx`. All comparisons are case-insensitive. If every FG line in an order is excluded, the order is skipped and the next eligible order takes its sequence number. For a mixed order, only the excluded FG lines are removed. An eligible order needed for the first 36 in Buyer Requested Shipment Date mode must have a valid date.
 
 To update exemptions, replace `data/exemptions/finished_good_exemptions.xlsx` with the latest list. Keep an `Item_Name` column; no app upload is needed.
